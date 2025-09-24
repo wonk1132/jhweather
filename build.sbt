@@ -7,6 +7,7 @@ ThisBuild / scalaVersion := "3.3.6"
 val catsVer = "3.6.3"
 val logForCatsVer = "2.7.1"
 val http4sVersion = "1.0.0-M38"
+val circeVersion = "0.14.14"
 
 val scalacOpts: Seq[String] = Seq(
   "-Wvalue-discard",
@@ -30,7 +31,8 @@ lazy val weather = (project in file("."))
       "org.typelevel" %% "cats-effect" % catsVer,
       "org.typelevel" %% "cats-effect-std" % catsVer,
       "org.scalatest" %% "scalatest" % "3.2.19",
-      "io.circe" %% "circe-core" % "0.14.14",
+      "io.circe" %% "circe-core" % circeVersion,
+      "io.circe" %% "circe-generic" % circeVersion,
       "org.http4s" %% "http4s-ember-server" % http4sVersion,
       "org.http4s" %% "http4s-blaze-client" % http4sVersion,
       "org.http4s" %% "http4s-blaze-server" % http4sVersion,

@@ -15,7 +15,11 @@ import cats.data.{EitherT, Kleisli}
 import cats.effect.{Async, ExitCode, IO, IOApp, Resource}
 import cats.syntax.all.*
 import com.comcast.ip4s.*
-import org.http4s.HttpRoutes
+import com.jh.weather
+import io.circe._
+import io.circe.generic.semiauto._
+import org.http4s.circe.jsonEncoderOf
+import org.http4s.{EntityEncoder, HttpRoutes}
 import org.http4s.dsl.Http4sDsl
 import org.http4s.implicits.*
 import org.http4s.ember.server.*
@@ -56,7 +60,7 @@ object Logger:
 trait WeatherServiceConfig:
   val runtimeEnvironment: RuntimeEnvironment
   val nationalWeatherServiceUri: String
-  val port: Int = 8080
+  val port: Port = port"8080"
 
 object WeatherServiceConfig:
 
@@ -76,8 +80,7 @@ object WeatherServiceConfig:
  * An abstraction against the exterior HTTP service we will be calling to get weather data.
  */
 trait NationalWeatherService[F[_]]:
-  type ShortForecast = String
-  def fetchShortForecast(latitude: Latitude, longitude: Longitude): ShortForecast
+  def fetchForecast(latitude: Latitude, longitude: Longitude): NationalWeatherService.Forecast
 
   /**
    * Names of metrics for this service
@@ -86,11 +89,25 @@ trait NationalWeatherService[F[_]]:
   val metric_fetch_failure = "nws_fetch_failure"
 
 object NationalWeatherService:
+
+  enum ForecastCharacterization:
+    case ReallyCold, Cold, Brisk, Mild, Warm, Hot, Inferno
+    def fromTemperature(f: Float): ForecastCharacterization = ???
+
+  type ShortForecast = String
+  case class Forecast(characterization: ForecastCharacterization, shortForecast: ShortForecast)
+
+  // Forecast is used as the return type from HTTP calls; this sets up the automagic JSONification
+  given Encoder[ForecastCharacterization] = deriveEncoder[ForecastCharacterization]
+  given Decoder[ForecastCharacterization] = deriveDecoder[ForecastCharacterization]
+  given Encoder[Forecast] = deriveEncoder[Forecast]
+  given Decoder[Forecast] = deriveDecoder[Forecast]
+
   def apply[F[_]: Async](
                           config: WeatherServiceConfig
                         )(using metrics: Metrics[F], logger: Logger[F]): NationalWeatherService[F] =
     new NationalWeatherService[F]:
-      override def fetchShortForecast(latitude: Latitude, longitude: Longitude): ShortForecast = ???
+      override def fetchForecast(latitude: Latitude, longitude: Longitude): Forecast = ???
 
 /**
  * An abstraction against service monitoring. This would be realized with whatever metric infra was in use,
@@ -138,13 +155,31 @@ object WeatherRoutes:
     def unapply(str: String): Option[Longitude] =
       FloatVar.unapply(str).map(Longitude.apply)
 
-  def apply[F[_] : Async](nws: NationalWeatherService[F])(using logger: Logger[F]) =
+  def apply[F[_] : Async](nws: NationalWeatherService[F])(using logger: Logger[F], metrics: Metrics[F]) =
     val dsl = new Http4sDsl[F] {}
     import dsl.*
 
+    given EntityEncoder[F, NationalWeatherService.Forecast] = jsonEncoderOf[NationalWeatherService.Forecast]
+
     HttpRoutes.of[F] {
       case _ @ GET -> Root / "forecast" / "short" / "lat" / LatitudeVar(latitude) / "lon" / LongitudeVar(longitude) =>
-        Ok("asd")
+        (for
+          _ <- EitherT.rightT[F, Throwable](logger.info(s"fetching lat $latitude, lon $longitude from NWS"))
+          forecast = NationalWeatherService.Forecast(
+            NationalWeatherService.ForecastCharacterization.Hot,
+            "todo"
+          )
+        yield forecast)
+          .value
+          .flatMap:
+            case Left(error) =>
+              for
+                _ <- logger.error(s"NFS error: ${error.getMessage}")
+                // this response should follow some sort of convention such that clients can get back a JSON
+                // payload with some decent error messaging... This HTTP text does not play very nice with clients.
+                resp <- InternalServerError("could not process request")
+              yield resp
+            case Right(forecast) => Ok().map(_.withEntity(forecast))
     }.orNotFound
 
 /**
@@ -194,7 +229,7 @@ object Main extends IOApp:
 
   def run(args: List[String]): IO[ExitCode] =
     (for
-      runtimeEnvironment <- EitherT.fromEither[IO](fetchRuntimeEnvironment)
+      runtimeEnvironment <- EitherT.fromEither[IO](fetchRuntimeEnvironment) 
       config <- EitherT.fromEither[IO](WeatherServiceConfig.fetchForRuntimeEnvironment(runtimeEnvironment))
       componentHarness <- EitherT.fromEither[IO](ComponentHarness.fetchComponentHarnessForEnvironment[IO](config))
     yield componentHarness)
@@ -213,7 +248,7 @@ object Main extends IOApp:
                 server <- EmberServerBuilder
                  .default[IO]
                  .withHost(ipv4"0.0.0.0")
-                 .withPort(port"8080")
+                 .withPort(componentHarness.configuration.port)
                  .withHttpApp(componentHarness.routes)
                  .build
                 _ <- Resource.eval(componentHarness.logger.info("server started! Awaiting inbound requests..."))

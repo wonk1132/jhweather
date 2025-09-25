@@ -1,21 +1,22 @@
 package com.jh.weather
 
-import cats.data.{EitherT, Kleisli}
+import cats.data.EitherT
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import cats.syntax.all.*
-import io.circe.syntax._
+import io.circe.syntax.*
 import org.http4s.*
-import org.http4s.dsl.io.*
 import org.http4s.implicits.*
-import com.jh.weather.Forecast.ForecastCharacterization
-import com.jh.weather.NationalWeatherService.*
+import com.jh.weather.ForecastCharacterization
 import fs2.text
 import org.http4s.circe.jsonEncoderOf
-import org.http4s.{Request, Response}
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.must.Matchers.*
 
+/**
+ * typically, we would have a one-test-suite-class per class that we are testing (i.e the service, routes, etc).
+ * I'm shortcutting here for readability.
+ */
 class EverythingSpec extends AnyFunSuite:
 
   val config: WeatherServiceConfig = WeatherServiceConfig
@@ -32,6 +33,18 @@ class EverythingSpec extends AnyFunSuite:
 
   val client: IO[NationalWeatherService[IO]] = NationalWeatherService.apply[IO](config)
 
+  // a fake NWS such that we have a stable component that gives back data we can control
+  val fakeNwsService: IO[NationalWeatherService[IO]] = IO.pure {
+    new NationalWeatherService[IO]:
+      def fetchForecast(latitude: Latitude, longitude: Longitude): IO[Either[Throwable, Forecast]] =
+        IO.pure {
+          Forecast(
+            ForecastCharacterization.Moderate,
+            "foobar"
+          ).asRight
+        }
+  }
+
   test("deserialiation of nws point json succeeds") {
 
     // this is just an optimistic test. Should add tests to ensure error when JSON is malformed or changed as well
@@ -42,6 +55,10 @@ class EverythingSpec extends AnyFunSuite:
         point =>
           point.properties.forecast.mustBe("https://api.weather.gov/gridpoints/TOP/32,81/forecast")
       )
+  }
+
+  test("deser of nws point fails") {
+    // failure test case would be written here...
   }
 
   test("deser of nws forecast json succeeds") {
@@ -59,6 +76,10 @@ class EverythingSpec extends AnyFunSuite:
       )
   }
 
+  test("deser of nws forecast json fails") {
+    // failure test case would be written here...
+  }
+
   test("NWS forecast results in correct JH Forecast") {
     val nwsForecast =
       NwsForecast.fromJson(TestData.forecastJson).getOrElse(throw Throwable("forecast deser error"))
@@ -66,10 +87,12 @@ class EverythingSpec extends AnyFunSuite:
       .fromNws(nwsForecast)
       .bimap(
         error => throw error,
-        forecast =>
-          forecast.characterization.mustBe(Forecast.ForecastCharacterization.Warm)
+        (forecast: Forecast) =>
+          forecast.characterization.mustBe(ForecastCharacterization.Moderate)
           forecast.shortForecast.mustBe("Mostly Sunny")
       )
+
+    // I can't see here how we could make a failure test case that isn't just redundant with the existing serdes test.
   }
 
   test("Forecast serdes") {
@@ -77,22 +100,13 @@ class EverythingSpec extends AnyFunSuite:
     val dehydrated = f.asJson.noSpaces
     val rehydrated = Forecast.fromJsonString(dehydrated)
     rehydrated.mustBe(Right(f))
+
+    Forecast
+      .fromJsonString("""{"foo":"bar"}""")
+      .isLeft.mustBe(true)
   }
 
   test("call to JH weather service succeeds") {
-
-    // this tests our Routes, which isn't that meaningful when we are faking the NWS.
-
-    val fakeNwsService: IO[NationalWeatherService[IO]] = IO.pure {
-      new NationalWeatherService[IO]:
-        def fetchForecast(latitude: Latitude, longitude: Longitude): IO[Either[Throwable, Forecast]] =
-          IO.pure {
-            Forecast(
-              ForecastCharacterization.Mild,
-              "foobar"
-            ).asRight
-          }
-    }
 
     val route = WeatherRoutes.apply(fakeNwsService)
     val forecastRequest = Request[IO](Method.GET, uri"forecast/short/lat/39.3/lon/-97.08")
@@ -103,11 +117,23 @@ class EverythingSpec extends AnyFunSuite:
       forecast = Forecast.fromJsonString(body)
       f = forecast.getOrElse(fail(s"no forecast found? $forecast"))
       _ = f.shortForecast.mustBe("foobar")
-      _ = f.characterization.mustBe(ForecastCharacterization.Mild)
+      _ = f.characterization.mustBe(ForecastCharacterization.Moderate)
     yield forecast).unsafeRunSync()
   }
 
-  // this should be in an IT suite, not in a unit test suite.
+  test("call to JH weather service fails with bad URI") {
+    val route = WeatherRoutes.apply(fakeNwsService)
+    val forecastRequest = Request[IO](Method.GET, uri"forecast/short/lat/39.3/foobar/-97.08")
+
+    (for
+      response <- route.run(forecastRequest)
+      _ = response.status.code.mustBe(404)
+    yield ()).unsafeRunSync()
+  }
+
+  // these IT tests should be in an IT suite, not in a unit test suite. Unit tests should be 100% deterministic,
+  // but with these IT's we are testing our call to the real NWS service which will not return back stable data.
+  // Normally, we would split these into in IT suite themselves, but I think that would be overkill for this example.
   test("IT test: pull forecast from NWS succeeds") {
     (for
       c <- client.attemptT
@@ -122,7 +148,7 @@ class EverythingSpec extends AnyFunSuite:
       _ = forecast.shortForecast.nonEmpty.mustBe(true) // ugly and unhelpful.
     yield ()).value.unsafeRunSync() match
       case Right(forecast) => ()
-      case Left(e) => throw e
+      case Left(e: Throwable) => throw e
   }
 
   test("IT test: pull forecast from NWS with bad lat/lon errors as expected") {

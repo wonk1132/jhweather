@@ -1,17 +1,5 @@
 package com.jh.weather
 
-/** For this assignment, I'm using a single file for ev all of the various bits (except for tests).
-  * This is generally not best-practice (almost every type should have its own file), but I think
-  * for this particular task, it is easier to read and follow if it's all just in-lime. Sorry if it
-  * lands otherwise.
-  *
-  * I'm using the tagless final approach here (i.e. F[_]), which is total overkill and needlessly
-  * complicated for this little service, but it does allow me to follow what I think is a best
-  * practice when working with the TypeLevel stack. I've been of two minds with this approach, as
-  * it is a significant legibility barrier to newer devs. One could certainly make the argument
-  * that the pain of the tagless final abstraction is not worth it.
-  */
-
 import cats.data.EitherT
 import cats.effect.*
 import cats.syntax.all.*

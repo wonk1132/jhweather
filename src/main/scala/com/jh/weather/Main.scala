@@ -168,7 +168,7 @@ object NationalWeatherService:
                   _ <- logger.error(s"failed pulling forecast: ${error.getMessage}").attemptT
                   _ <- metrics.uptick(metric_fetch_failure).attemptT
                   e <- EitherT.leftT[F, Forecast](error)
-                yield e
+                yield e : Unit
               }.value
         }
       }
